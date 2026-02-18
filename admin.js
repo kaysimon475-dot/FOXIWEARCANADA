@@ -64,14 +64,18 @@ btnSave.addEventListener('click', async () => {
       // cleanup admin-only artifacts inside iframe before serializing
       cleanupEditorArtifacts();
     const html = '<!doctype html>\n' + doc.documentElement.outerHTML;
-    const res = await fetch('/api/save', {
+    // send to Netlify Function which commits to GitHub
+    const res = await fetch('/.netlify/functions/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html })
+      body: JSON.stringify({ path: 'index.html', content: html })
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error('Save failed: [' + res.status + '] ' + (txt || res.statusText || 'No details'));
+    }
     const j = await res.json();
-    alert('CHANGES APPLIED TO FOXIWEAR ' + (j.backup || 'none'));
+    alert('Saved to repo. Commit: ' + (j.commit || 'unknown'));
     if (saveStatus) saveStatus.textContent = 'SAVED';
   } catch (err) {
     alert('Save failed: ' + err.message);
@@ -186,11 +190,7 @@ async function handleImageReplace(el, file) {
     // keep object-fit so image fills the box without changing layout
     if (!el.style.objectFit) el.style.objectFit = 'cover';
 
-    const fd = new FormData();
-    fd.append('file', file);
-    const resp = await fetch('/api/upload', { method: 'POST', body: fd });
-    if (!resp.ok) throw new Error(await resp.text());
-    const j = await resp.json();
+    const j = await uploadFile(file);
     // set a data attribute to indicate change for possible restore
     el.setAttribute('data-admin-replaced-src', j.url);
     el.src = j.url;
@@ -242,6 +242,39 @@ function cleanupEditorArtifacts() {
   } catch (e) {
     console.warn('cleanupEditorArtifacts failed', e);
   }
+}
+
+function sanitizeFilename(name) {
+  return name.replace(/[^a-z0-9_.-]/gi, '_');
+}
+
+function uploadFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = async function () {
+      try {
+        const dataUrl = reader.result; // data:*/*;base64,xxxx
+        const comma = dataUrl.indexOf(',');
+        const base64 = dataUrl.substring(comma + 1);
+        const filename = sanitizeFilename(file.name || ('upload-' + Date.now()));
+        const res = await fetch('/.netlify/functions/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ filename, content: base64 })
+        });
+        if (!res.ok) {
+          const txt = await res.text();
+          return reject(new Error('Upload failed: [' + res.status + '] ' + (txt || res.statusText || 'No details')));
+        }
+        const j = await res.json();
+        resolve(j);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.onerror = (e) => reject(e);
+    reader.readAsDataURL(file);
+  });
 }
 
 btnSelectText.addEventListener('click', () => {
